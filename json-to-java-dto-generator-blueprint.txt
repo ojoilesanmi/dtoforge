@@ -1,0 +1,437 @@
+JSON to Java DTO Generator - Refined Architecture Blueprint
+
+Project: DTOForge
+Description: Local-first JSON to Java DTO code generator
+
+1. Core Goal
+
+Input:
+  - raw JSON string
+  - generation options (record vs class, Jackson annotations, wrapper types, package name)
+
+Output:
+  - Java DTO source code (records or classes)
+  - nested types generated as separate top-level types
+  - optional Jackson @JsonProperty annotations
+  - optional Lombok annotations (future)
+
+v1 constraints:
+  - local-first, no DB, no auth, no async
+
+2. Architecture
+
+Simplified 3-layer structure (hexagonal-inspired but pragmatic):
+
+com.yourname.dtoforge
+├── core/                    # Business logic + domain
+│   ├── model/               # Immutable domain types
+│   ├── parser/              # JSON → domain model
+│   ├── generator/           # Domain model → Java code
+│   ├── strategy/            # Naming, type inference
+│   └── validator/           # Input validation
+├── web/                     # HTTP layer only
+│   ├── controller/
+│   ├── dto/                 # Request/response DTOs
+│   └── advice/              # Global exception handling
+└── config/                  # Spring configuration
+
+Why not 4 layers?
+  - "application" and "domain" collapse naturally for a single-use-case app
+  - No orchestration complexity to justify a separate layer
+  - Interfaces for single implementations are premature abstraction
+
+3. Design Decisions
+
+a) NO use-case interface
+   - Single concrete GenerateDtoService class
+   - Extract interface only if a second implementation appears (it won't in v1)
+
+b) NO factory interface
+   - Spring List<CodeGenerator> injection + Map lookup
+   - Self-registering: add a new generator, annotate @Component, done
+
+c) NO abstract base class for generators
+   - Composition over inheritance
+   - Shared logic (imports, package, formatting) → JavaSyntaxRenderer helper
+   - Record and class generators diverge enough that inheritance causes friction
+
+d) GenerationOptions: enum flags, not booleans
+   - Avoids boolean blindness at call sites
+   - Extensible without breaking constructors
+
+e) Type inference: use Jackson's actual node semantics
+   - isInt() → Integer
+   - isLong() → Long
+   - isBigInteger() → BigInteger
+   - isDouble()/isFloat() → Double (BigDecimal for precision mode)
+   - isBigDecimal() → BigDecimal
+   - All numeric types use wrappers (null-safe for DTOs)
+
+f) Duplicate nested types: path-based naming (v1)
+   - ParentA_AddressDto vs ParentB_AddressDto
+   - Deterministic, no false merges from structural equality
+
+g) Code formatting: generate clean code directly
+   - No external formatter dependency in v1
+   - Consistent indentation built into generators
+   - Add google-java-format later if needed
+
+h) Error responses: Spring Boot 3 ProblemDetail (RFC 7807)
+
+4. Package Structure (Concrete)
+
+com.yourname.dtoforge
+├── DtoForgeApplication.java
+├── config/
+│   └── JacksonConfig.java
+├── core/
+│   ├── model/
+│   │   ├── DomainType.java           # sealed interface
+│   │   ├── PrimitiveType.java
+│   │   ├── ObjectType.java
+│   │   ├── ArrayType.java
+│   │   ├── FieldDefinition.java
+│   │   ├── JavaTypeKind.java         # enum
+│   │   ├── OutputStyle.java          # enum: RECORD, CLASS
+│   │   ├── GenerationFlag.java       # enum flags
+│   │   ├── GenerationOptions.java    # flag set + builder
+│   │   ├── GenerateCommand.java
+│   │   └── GenerateResult.java
+│   ├── parser/
+│   │   ├── JsonStructureParser.java  # interface
+│   │   └── JacksonJsonStructureParser.java
+│   ├── generator/
+│   │   ├── CodeGenerator.java        # interface
+│   │   ├── JavaRecordCodeGenerator.java
+│   │   ├── JavaClassCodeGenerator.java
+│   │   ├── CodeGeneratorRegistry.java  # replaces factory
+│   │   └── JavaSyntaxRenderer.java     # shared code helpers
+│   ├── strategy/
+│   │   ├── JavaNamingStrategy.java     # class names, field names, keywords
+│   │   └── TypeInferenceService.java   # JsonNode → DomainType
+│   └── validator/
+│       └── JsonInputValidator.java
+├── web/
+│   ├── controller/
+│   │   └── DtoGeneratorController.java
+│   ├── dto/
+│   │   ├── GenerateDtoRequest.java
+│   │   └── ErrorResponse.java
+│   └── advice/
+│       └── GlobalExceptionHandler.java
+└── shared/
+    └── exception/
+        ├── InvalidJsonException.java
+        ├── InvalidJsonStructureException.java
+        └── UnsupportedGenerationStyleException.java
+
+5. Core Domain Model
+
+sealed interface DomainType permits PrimitiveType, ObjectType, ArrayType {
+    String typeName();
+}
+
+record PrimitiveType(JavaTypeKind kind) implements DomainType {
+    @Override public String typeName() { return kind.javaTypeName(); }
+}
+
+record ObjectType(String name, List<FieldDefinition> fields) implements DomainType {
+    @Override public String typeName() { return name; }
+}
+
+record ArrayType(DomainType elementType) implements DomainType {
+    @Override public String typeName() { return "List<" + elementType.typeName() + ">"; }
+}
+
+record FieldDefinition(String jsonName, String javaName, DomainType type, boolean nullable) {}
+
+enum JavaTypeKind {
+    STRING("String"),
+    INTEGER("Integer"),
+    LONG("Long"),
+    BIG_INTEGER("BigInteger"),
+    DOUBLE("Double"),
+    BIG_DECIMAL("BigDecimal"),
+    BOOLEAN("Boolean"),
+    OBJECT("Object"),
+    UNKNOWN("Object");
+
+    private final String javaTypeName;
+    // constructor + getter
+}
+
+enum OutputStyle { RECORD, CLASS }
+
+enum GenerationFlag {
+    JACKSON_ANNOTATIONS,
+    WRAPPER_TYPES,       // always true in v1 (null-safe)
+    NESTED_STATIC_CLASSES
+}
+
+record GenerationOptions(Set<GenerationFlag> flags, String packageName) {
+    boolean hasFlag(GenerationFlag flag) { return flags.contains(flag); }
+
+    static GenerationOptions defaults() {
+        return new GenerationOptions(Set.of(GenerationFlag.WRAPPER_TYPES), "com.example.dto");
+    }
+}
+
+record GenerateCommand(String json, String rootClassName, OutputStyle outputStyle, GenerationOptions options) {}
+
+record GenerateResult(String generatedCode) {}
+
+6. Interfaces
+
+interface CodeGenerator {
+    OutputStyle supportedStyle();
+    String generate(ObjectType rootType, GenerationOptions options);
+}
+
+interface JsonStructureParser {
+    ObjectType parse(String json, String rootClassName);
+}
+
+7. CodeGeneratorRegistry (replaces factory)
+
+@Component
+public class CodeGeneratorRegistry {
+    private final Map<OutputStyle, CodeGenerator> generators;
+
+    public CodeGeneratorRegistry(List<CodeGenerator> generatorBeans) {
+        this.generators = generatorBeans.stream()
+            .collect(Collectors.toMap(CodeGenerator::supportedStyle, Function.identity()));
+    }
+
+    public CodeGenerator get(OutputStyle style) {
+        return Optional.ofNullable(generators.get(style))
+            .orElseThrow(() -> new UnsupportedGenerationStyleException(style));
+    }
+}
+
+8. JavaSyntaxRenderer (composition, not inheritance)
+
+Handles shared concerns:
+  - buildImports(Set<String>)
+  - buildPackageLine(String)
+  - buildJacksonAnnotation(String jsonName)
+  - indent(int level)
+  - resolveImports(ObjectType)
+
+9. JavaNamingStrategy
+
+Responsibilities:
+  - toClassName(String raw)   → "user_name" → "UserName"
+  - toFieldName(String raw)   → "user_name" → "userName"
+  - toNestedClassName(String parent, String child) → "UserAddress"
+  - escapeKeyword(String name) → "class" → "classField"
+
+Reserved keywords stored as a Set<String> within this class.
+
+10. TypeInferenceService
+
+Maps Jackson JsonNode → DomainType:
+  - TextNode → PrimitiveType(STRING)
+  - IntNode → PrimitiveType(INTEGER)
+  - LongNode → PrimitiveType(LONG)
+  - BigIntegerNode → PrimitiveType(BIG_INTEGER)
+  - DoubleNode/FloatNode → PrimitiveType(DOUBLE)
+  - DecimalNode → PrimitiveType(BIG_DECIMAL)
+  - BooleanNode → PrimitiveType(BOOLEAN)
+  - NullNode → PrimitiveType(OBJECT) with nullable=true
+  - ArrayNode → ArrayType(infer from first element)
+  - ObjectNode → ObjectType(recursively map fields)
+
+Array inference rules:
+  - empty array → ArrayType(PrimitiveType(OBJECT))
+  - all same primitive → ArrayType(PrimitiveType(same kind))
+  - objects → ArrayType(ObjectType with merged fields)
+  - mixed → ArrayType(PrimitiveType(OBJECT))
+
+11. Request/Response Contracts
+
+Request:
+record GenerateDtoRequest(
+    @NotBlank String json,
+    @NotBlank String rootClassName,
+    @NotBlank String outputStyle,
+    Boolean useJacksonAnnotations,
+    Boolean useNestedStaticClasses,
+    String packageName
+) {}
+
+Response:
+  - Success: 200 with generated code in body
+  - Error: 400/500 with ProblemDetail (RFC 7807)
+
+12. Controller
+
+@RestController
+@RequestMapping("/api/v1/dto-generator")
+class DtoGeneratorController {
+    private final GenerateDtoService generateDtoService;
+
+    @PostMapping("/generate")
+    ResponseEntity<String> generate(@Valid @RequestBody GenerateDtoRequest request) {
+        String code = generateDtoService.generate(toCommand(request));
+        return ResponseEntity.ok().contentType(MediaType.TEXT_PLAIN).body(code);
+    }
+}
+
+Controller does NOT:
+  - parse JSON
+  - infer types
+  - format code
+  - handle naming
+
+13. Exception Handling
+
+@RestControllerAdvice
+class GlobalExceptionHandler {
+    @ExceptionHandler(InvalidJsonException.class)
+    ProblemDetail handleInvalidJson(InvalidJsonException ex) { ... }
+
+    @ExceptionHandler(InvalidJsonStructureException.class)
+    ProblemDetail handleInvalidStructure(InvalidJsonStructureException ex) { ... }
+
+    @ExceptionHandler(UnsupportedGenerationStyleException.class)
+    ProblemDetail handleUnsupportedStyle(UnsupportedGenerationStyleException ex) { ... }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    ProblemDetail handleValidation(MethodArgumentNotValidException ex) { ... }
+}
+
+14. Validation
+
+JsonInputValidator:
+  - JSON not blank
+  - root class name not blank (valid Java identifier after transformation)
+  - output style valid
+  - JSON is parseable and root is an object
+
+Additional: Jakarta Validation annotations on request DTO.
+
+15. Generated Code Examples
+
+Record:
+public record UserDto(
+    String firstName,
+    Integer age,
+    AddressDto address
+) {}
+
+public record AddressDto(
+    String city,
+    String country
+) {}
+
+Class:
+public class UserDto {
+    private String firstName;
+    private Integer age;
+    private AddressDto address;
+
+    public UserDto() {}
+
+    public String getFirstName() { return firstName; }
+    public void setFirstName(String firstName) { this.firstName = firstName; }
+    // ...
+}
+
+With Jackson annotations:
+public record UserDto(
+    @JsonProperty("user_name")
+    String userName,
+    @JsonProperty("user-profile")
+    String userProfile
+) {}
+
+16. Testing Strategy
+
+Unit tests (pure domain, no Spring):
+  - JavaNamingStrategyTest
+  - TypeInferenceServiceTest
+  - JacksonJsonStructureParserTest
+  - JavaRecordCodeGeneratorTest
+  - JavaClassCodeGeneratorTest
+  - JsonInputValidatorTest
+
+Integration tests (with Spring):
+  - DtoGeneratorControllerTest (MockMvc)
+
+Property-based tests (jqwik):
+  - Random valid JSON → generated code is valid Java syntax
+  - Naming strategy: output is always a valid Java identifier
+
+17. Dependencies
+
+Required:
+  - spring-boot-starter-web
+  - spring-boot-starter-validation
+  - jackson-datab2 (transitive via web starter)
+
+Test:
+  - spring-boot-starter-test
+  - jqwik (property-based testing)
+
+Future:
+  - lombok
+  - google-java-format
+  - spotless
+  - archunit
+
+18. MVP Implementation Order
+
+Phase 1 — Bootstrap:
+  - pom.xml, DtoForgeApplication
+  - package structure
+  - request/response DTOs
+  - exception handling skeleton
+
+Phase 2 — Core domain:
+  - DomainType hierarchy
+  - JavaNamingStrategy
+  - TypeInferenceService
+  - JsonStructureParser interface + Jackson implementation
+
+Phase 3 — Generators:
+  - CodeGenerator interface
+  - JavaSyntaxRenderer
+  - JavaRecordCodeGenerator
+  - JavaClassCodeGenerator
+  - CodeGeneratorRegistry
+
+Phase 4 — Wiring:
+  - GenerateDtoService (orchestrator)
+  - Controller
+  - Integration tests
+
+Phase 5 — Polish:
+  - edge cases (empty arrays, nulls, reserved keywords)
+  - duplicate nested type naming
+  - comprehensive tests
+
+19. Clean Code Rules
+
+  - Controllers stay thin (mapping + delegation only)
+  - One class, one responsibility
+  - No static utility dumping grounds
+  - No business logic in DTOs
+  - No Jackson JsonNode leaking outside infrastructure
+  - Meaningful names, no boolean blindness
+  - Short methods, intention-revealing
+  - Composition over inheritance
+  - Extract abstractions when you feel pain, not before
+
+20. What NOT to Build in v1
+
+  - Authentication
+  - Persistence
+  - UI/frontend
+  - Multiple output languages (Kotlin, etc.)
+  - OpenAPI spec generation
+  - WebSocket preview
+  - Plugin system
+  - File upload/download
+  - Async job processing
+
+Keep v1 strict and small. One endpoint. One job done well.
