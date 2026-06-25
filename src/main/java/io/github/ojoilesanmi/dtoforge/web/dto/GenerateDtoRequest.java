@@ -1,15 +1,14 @@
 package io.github.ojoilesanmi.dtoforge.web.dto;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.NotNull;
 
 public record GenerateDtoRequest(
-        @NotBlank(message = "JSON input must not be blank")
-        String json,
+        @NotNull(message = "JSON input must not be null")
+        JsonNode json,
         @NotBlank(message = "Root class name must not be blank")
         String rootClassName,
-        @NotBlank(message = "Output style must be specified")
-        @Pattern(regexp = "(?i)RECORD|CLASS", message = "Output style must be RECORD or CLASS")
         String outputStyle,
         Boolean useJacksonAnnotations,
         String packageName

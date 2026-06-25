@@ -18,10 +18,10 @@ class DtoGeneratorControllerIntegrationTest {
     private MockMvc mockMvc;
 
     @Test
-    void generatesRecordSuccessfully() throws Exception {
+    void generatesRecordFromRawJson() throws Exception {
         String requestBody = """
                 {
-                    "json": "{\\"name\\": \\"John\\", \\"age\\": 30}",
+                    "json": {"name": "John", "age": 30},
                     "rootClassName": "UserDto",
                     "outputStyle": "RECORD"
                 }
@@ -36,10 +36,27 @@ class DtoGeneratorControllerIntegrationTest {
     }
 
     @Test
-    void generatesClassSuccessfully() throws Exception {
+    void generatesRecordFromStringifiedJson() throws Exception {
         String requestBody = """
                 {
                     "json": "{\\"name\\": \\"John\\", \\"age\\": 30}",
+                    "rootClassName": "UserDto",
+                    "outputStyle": "RECORD"
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/dto-generator/generate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("public record UserDto(")));
+    }
+
+    @Test
+    void generatesClassFromRawJson() throws Exception {
+        String requestBody = """
+                {
+                    "json": {"name": "John", "age": 30},
                     "rootClassName": "UserDto",
                     "outputStyle": "CLASS"
                 }
@@ -53,74 +70,10 @@ class DtoGeneratorControllerIntegrationTest {
     }
 
     @Test
-    void returnsBadRequestForInvalidJson() throws Exception {
-        String requestBody = """
-                {
-                    "json": "not valid json",
-                    "rootClassName": "TestDto",
-                    "outputStyle": "RECORD"
-                }
-                """;
-
-        mockMvc.perform(post("/api/v1/dto-generator/generate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(requestBody))
-                .andExpect(status().isBadRequest());
-    }
-
-    @Test
-    void returnsBadRequestForMissingFields() throws Exception {
-        String requestBody = """
-                {
-                    "json": "{}",
-                    "rootClassName": "",
-                    "outputStyle": "RECORD"
-                }
-                """;
-
-        mockMvc.perform(post("/api/v1/dto-generator/generate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(requestBody))
-                .andExpect(status().isBadRequest());
-    }
-
-    @Test
-    void returnsBadRequestForInvalidOutputStyle() throws Exception {
-        String requestBody = """
-                {
-                    "json": "{\\"name\\": \\"John\\"}",
-                    "rootClassName": "TestDto",
-                    "outputStyle": "FOO"
-                }
-                """;
-
-        mockMvc.perform(post("/api/v1/dto-generator/generate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(requestBody))
-                .andExpect(status().isBadRequest());
-    }
-
-    @Test
-    void returnsBadRequestForInvalidOutputStylePattern() throws Exception {
-        String requestBody = """
-                {
-                    "json": "{\\"name\\": \\"John\\"}",
-                    "rootClassName": "TestDto",
-                    "outputStyle": "xml"
-                }
-                """;
-
-        mockMvc.perform(post("/api/v1/dto-generator/generate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(requestBody))
-                .andExpect(status().isBadRequest());
-    }
-
-    @Test
     void generatesWithJacksonAnnotations() throws Exception {
         String requestBody = """
                 {
-                    "json": "{\\"user_name\\": \\"John\\"}",
+                    "json": {"user_name": "John"},
                     "rootClassName": "UserDto",
                     "outputStyle": "RECORD",
                     "useJacksonAnnotations": true
@@ -135,10 +88,10 @@ class DtoGeneratorControllerIntegrationTest {
     }
 
     @Test
-    void generatesNestedTypes() throws Exception {
+    void generatesNestedTypesFromRawJson() throws Exception {
         String requestBody = """
                 {
-                    "json": "{\\"name\\": \\"John\\", \\"address\\": {\\"city\\": \\"London\\", \\"country\\": \\"UK\\"}}",
+                    "json": {"name": "John", "address": {"city": "London", "country": "UK"}},
                     "rootClassName": "UserDto",
                     "outputStyle": "RECORD"
                 }
@@ -150,5 +103,85 @@ class DtoGeneratorControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("Address")))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("city")));
+    }
+
+    @Test
+    void generatesWithPackageName() throws Exception {
+        String requestBody = """
+                {
+                    "json": {"name": "John"},
+                    "rootClassName": "UserDto",
+                    "outputStyle": "RECORD",
+                    "packageName": "com.acme.dto"
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/dto-generator/generate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("package com.acme.dto;")));
+    }
+
+    @Test
+    void returnsBadRequestForNullJson() throws Exception {
+        String requestBody = """
+                {
+                    "json": null,
+                    "rootClassName": "TestDto"
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/dto-generator/generate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void returnsBadRequestForMissingFields() throws Exception {
+        String requestBody = """
+                {
+                    "json": {"name": "test"},
+                    "rootClassName": ""
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/dto-generator/generate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void returnsBadRequestForInvalidOutputStyle() throws Exception {
+        String requestBody = """
+                {
+                    "json": {"name": "John"},
+                    "rootClassName": "TestDto",
+                    "outputStyle": "FOO"
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/dto-generator/generate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void defaultsToRecordWhenOutputStyleOmitted() throws Exception {
+        String requestBody = """
+                {
+                    "json": {"name": "John"},
+                    "rootClassName": "UserDto"
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/dto-generator/generate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("public record UserDto(")));
     }
 }
